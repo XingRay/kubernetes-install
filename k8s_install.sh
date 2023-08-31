@@ -68,7 +68,7 @@ calico_version="3.26.1"
 # 文件路径 
 # local_xxx 是执行这个安装脚本的节点上的文件路径, 如果使用相对路径是相对脚本文件的位置
 # 本机安装包文件存放路径
-local_package_dir="."
+local_package_dir="packages"
 # 临时目录, 每次脚本会先 ## 清空 ## , 再将安装过程中生成的文件放入这个目录,注意不要指向存有重要数据的目录
 local_tmp_dir="tmp"
 
@@ -97,6 +97,21 @@ k8s_pki_service_account="kubernetes-service-account"
 k8s_pki_front_proxy_ca="kubebernetes-front-proxy-ca"
 k8s_pki_front_proxy_client="kubebernetes-front-proxy-client"
 
+
+# 工具包本地导出目录
+local_tools_save_dir="tools"
+# 工具包远程节点临时存放目录
+remote_tools_save_dir="/root/tmp/tools"
+# ubuntu 22
+system_name="jammy"
+
+
+# 镜像本地导出目录
+local_image_save_dir="images"
+# 镜像远程节点临时存放目录
+remote_image_save_dir="/root/tmp/images"
+# 镜像的命名空间
+image_namespace=k8s.io
 
 ###################################################
 #                     参数设置结束                 #
@@ -127,6 +142,12 @@ tools=(
   "apt-transport-https"
   "ca-certificates"
   "ntpdate"
+  "gcc"
+  "gperf"
+  "make"
+  "keepalived"
+  "haproxy"
+  "jq"
 )
 
 etcd_hostnames=()
@@ -357,7 +378,7 @@ packages=(
     
 	"runc-v${runc_version}.amd64|https://github.com/opencontainers/runc/releases/download/v${runc_version}/runc.amd64"
 	
-  "libseccomp-${libseccomp_version}|https://github.com/seccomp/libseccomp/releases/download/v${libseccomp_version}/libseccomp-${libseccomp_version}.tar.gz"
+  "libseccomp-${libseccomp_version}.tar.gz|https://github.com/seccomp/libseccomp/releases/download/v${libseccomp_version}/libseccomp-${libseccomp_version}.tar.gz"
 
   "nerdctl-${nerdctl_version}-linux-amd64.tar.gz|https://github.com/containerd/nerdctl/releases/download/v${nerdctl_version}/nerdctl-${nerdctl_version}-linux-amd64.tar.gz"
 
@@ -410,6 +431,7 @@ for node in "${cluster_node_hostnames[@]}"; do
   ssh "root@$node" "echo \"hello from $node\""
 done
 echo "hello finished"
+
 
 # 更新系统
 echo "update and upgrade"
@@ -1021,16 +1043,44 @@ for node in "${k8s_node_hostnames[@]}"; do
 done
 echo "install nerdctl finished"
 
-# 安装 cfssl cfssljson
+
+# 如果本机存在预先导出的镜像则将镜像发送至各个节点, 导入镜像
+if [ -d "${local_image_save_dir}" ]; then
+  echo "send images to k8s-nodes"
+  for node in "${k8s_node_hostnames[@]}"; do
+    ssh "root@${node}" "mkdir -p ${remote_image_save_dir}"
+    ssh "root@${node}" "rm -rf ${remote_image_save_dir}/*"
+
+    echo "cpoying images to ${node}"
+    scp "${local_image_save_dir}"/* "root@${node}:${remote_image_save_dir}/"
+    
+    for filename in $(ls ${local_image_save_dir}); do
+      echo "load ${remote_image_save_dir}/${filename} in ${node}"
+      ssh "root@${node}" "nerdctl load --namespace=${image_namespace} -i ${remote_image_save_dir}/${filename}"
+    done
+    echo "load images on ${node} finished"
+  done
+  
+fi
+echo "load images finished"
+
+
+##################################
+#     安装 cfssl cfssljson       #
+##################################
+
 echo "install cfssl cfssljson to local node"
 cp ${local_package_dir}/cfssl_${cfssl_version}_linux_amd64 /usr/local/bin/cfssl
 cp ${local_package_dir}/cfssljson_${cfssl_version}_linux_amd64 /usr/local/bin/cfssljson
 chmod +x /usr/local/bin/cfssl /usr/local/bin/cfssljson
 echo "install cfssl cfssljson to local node finished"
 
+
+
 ##########################
 #        安装 etcd       #
 ##########################
+
 # 准备 etcd 安装过程使用的临时目录
 mkdir -p ${local_tmp_dir}/etcd
 rm -rf ${local_tmp_dir}/etcd/*
@@ -2651,7 +2701,7 @@ check_all_pods_ready_in_namespace() {
 }
 
 # 安装网络插件 calico
-cp calico-v${calico_version}.yaml ${local_tmp_dir}/kubernetes/kubernetes-resources/calico-v${calico_version}-CALICO_IPV4POOL_CIDR.yaml
+cp ${local_package_dir}/calico-v${calico_version}.yaml ${local_tmp_dir}/kubernetes/kubernetes-resources/calico-v${calico_version}-CALICO_IPV4POOL_CIDR.yaml
 sed -i "s/# - name: CALICO_IPV4POOL_CIDR/- name: CALICO_IPV4POOL_CIDR/g" ${local_tmp_dir}/kubernetes/kubernetes-resources/calico-v${calico_version}-CALICO_IPV4POOL_CIDR.yaml
 sed -i "s|#   value: \"192.168.0.0/16\"|  value: \"196.16.0.0/16\"|g" ${local_tmp_dir}/kubernetes/kubernetes-resources/calico-v${calico_version}-CALICO_IPV4POOL_CIDR.yaml
 
